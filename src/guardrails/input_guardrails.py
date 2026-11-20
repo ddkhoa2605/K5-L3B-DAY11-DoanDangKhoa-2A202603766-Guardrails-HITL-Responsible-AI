@@ -11,6 +11,7 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from google.genai import types
@@ -42,6 +43,44 @@ InputStatus = Literal["ALLOW", "BLOCK"]
 # Regex is one signal, not the whole security boundary.
 # ============================================================
 
+_ZERO_WIDTH = {
+    cp: None
+    for cp in (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD, 0x180E)
+}
+
+
+def _normalize(text: str) -> str:
+    """Canonicalize: NFKC, drop invisible/format chars, strip accents, lowercase."""
+    text = unicodedata.normalize("NFKC", text or "").translate(_ZERO_WIDTH)
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    text = text.replace("đ", "d").replace("Đ", "D")
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return re.sub(r"\s+", " ", text).lower().strip()
+
+
+INJECTION_PATTERNS = [
+    r"(ignore|disregard|forget|override|bypass)\s+(all\s+|any\s+)?(of\s+)?(your\s+|the\s+|my\s+)?(previous|prior|above|earlier|preceding|system)?\s*(instructions?|rules?|guidelines?|directives?|prompts?)",
+    r"\byou\s+are\s+now\b",
+    r"\bsystem\s+prompt\b",
+    r"(reveal|show|print|display|repeat|output|leak|tell\s+me)\s+(me\s+)?(your|the)\s+(\w+\s+)?(instructions?|prompt|rules|configuration)",
+    r"\bpretend\s+(you\s+are|to\s+be|you're)\b",
+    r"\bact\s+as\s+(a\s+|an\s+)?(unrestricted|unfiltered|uncensored|jailbroken|dan)\b",
+    r"\b(dan|developer|god)\s+mode\b",
+    r"\bjailbreak(ed)?\b",
+    r"\b(drop|truncate|alter)\s+table\b|\bunion\s+select\b|\bselect\s+.+\s+from\s+\w+",
+    r"\broleplay\s+as\b",
+    r"(admin(istrator)?|root|internal)\s+(password|credentials?)",
+    r"\b(api[\s_-]?key|secret\s+key|db\s+host|database\s+(host|password))\b.*\b(reveal|show|give|tell|what|confirm|print)\b",
+    r"\b(reveal|show|give|tell|print|confirm)\b.*\b(api[\s_-]?key|password|credentials?|secret)\b",
+    # Vietnamese (accents are stripped by _normalize)
+    r"(bo\s*qua|phot\s*lo|quen)\s+(tat\s+ca\s+)?(cac\s+)?(huong\s+dan|chi\s+dan|quy\s+tac|lenh)",
+    r"(tiet\s+lo|cho\s+toi\s+xem|hien\s+thi)\s+.*(mat\s+khau|system\s+prompt|huong\s+dan\s+he\s+thong)",
+    r"gia\s+vo\s+(la|ban\s+la)\b",
+]
+_INJECTION_RE = [re.compile(p, re.IGNORECASE) for p in INJECTION_PATTERNS]
+
+
 def detect_injection(user_input: str) -> InputStatus:
     """Detect prompt injection patterns in user input.
 
@@ -51,14 +90,9 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
-
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+    text = _normalize(user_input)
+    for pattern in _INJECTION_RE:
+        if pattern.search(text):
             return "BLOCK"
     return "ALLOW"
 
@@ -74,6 +108,13 @@ def detect_injection(user_input: str) -> InputStatus:
 # Return ``"ALLOW"`` if banking-related and OK.
 # ============================================================
 
+# Extra banking keywords (accent-stripped) not covered by core.config.ALLOWED_TOPICS
+_EXTRA_ALLOWED_TOPICS = [
+    "bank", "money", "chuyen khoan", "khoan vay", "tin dung", "gui tien",
+    "rut tien", "thanh toan",
+]
+
+
 def topic_filter(user_input: str) -> InputStatus:
     """Decide whether the input is on-topic for VinBank.
 
@@ -84,14 +125,17 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
+    text = _normalize(user_input)
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
+    for topic in BLOCKED_TOPICS:
+        if re.search(rf"\b{re.escape(topic)}", text):
+            return "BLOCK"
 
-    pass  # Replace with your implementation
+    for topic in [*ALLOWED_TOPICS, *_EXTRA_ALLOWED_TOPICS]:
+        if re.search(rf"\b{re.escape(topic)}", text):
+            return "ALLOW"
+
+    return "BLOCK"
 
 
 # ============================================================
@@ -144,14 +188,21 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Request blocked: potential prompt injection detected. "
+                "I can only help with VinBank banking questions."
+            )
 
-        pass  # Replace with your implementation
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Sorry, I can only assist with banking topics such as accounts, "
+                "transactions, loans, savings and credit cards."
+            )
+
+        return None
 
 
 # ============================================================
