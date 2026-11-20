@@ -1,5 +1,30 @@
 # Day 11 — Controlled Agent Security (2026)
 
+> **Học viên:** Doan Dang Khoa · **MSSV:** 2A202603766
+
+## Cách chạy nhanh (bài nộp)
+
+Chạy từ **gốc repo** (Windows PowerShell):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env        # điền OPENROUTER_API_KEY + OPENAI_API_KEY (không commit .env)
+
+python src/main.py --part 2        # CP2: input/output guardrails (in ra terminal)
+python src/main.py --part 3        # CP3: pipeline → outputs/results.json, audit_log.json, metrics.json
+python src/main.py --part 4        # CP4: red-team Red + Red Advance → outputs/attack_results.json, ...
+
+pytest tests/smoke -q
+pytest tests/public -q
+python scripts/grade.py --submission-dir . --out outputs/grade_report.json
+```
+
+Kết quả nằm trong `outputs/` (do lệnh sinh ra, không viết tay).
+
+---
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
